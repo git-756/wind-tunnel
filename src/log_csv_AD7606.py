@@ -216,7 +216,12 @@ class MainWindow(QMainWindow):
         self.feedback_target = 0.0
         self.feedback_iteration = 0
         
-        # ★ 状態管理用フラグ・変数
+        # ★ サーボの視覚的ステータス管理用の変数
+        self.servo_status = 'READY'  # 'READY', 'MOVING', 'OK', 'ERROR'
+        self.blink_state = False
+        self.ui_blink_count = 0
+
+        # ★ フィードバック状態管理用フラグ・変数
         self.feedback_state = 'ROUGH_MOVING'
         self.rough_move_timeout = 0
         self.rough_stop_count = 0
@@ -329,7 +334,11 @@ class MainWindow(QMainWindow):
         form_layout.addRow("Dyn. Pressure (q):", self.lbl_q)
 
         self.lbl_wind = QLabel("--.- m/s")
+        
+        # ★ ガタつき防止用の初期透明枠を適用
         self.lbl_pot = QLabel("--.- deg")
+        self.lbl_pot.setStyleSheet("border: 1.5px solid transparent; padding: 1px;")
+        
         self.btn_zero_pot = QPushButton("Set 0°")
         self.btn_zero_pot.clicked.connect(self.set_zero_pot)
         pot_layout = QHBoxLayout()
@@ -403,10 +412,7 @@ class MainWindow(QMainWindow):
         ctrl_layout.addWidget(self.btn_center)
         servo_layout.addLayout(ctrl_layout)
         
-        self.lbl_status = QLabel("Ready")
-        self.lbl_status.setAlignment(Qt.AlignCenter)
-        self.lbl_status.setStyleSheet("color: gray; padding: 5px; font-size: 14px;")
-        servo_layout.addWidget(self.lbl_status)
+        # ★ 画面縦幅圧縮のため、最下部にあった独立したステータスラベル(lbl_status)は削除しました
         
         servo_group.setLayout(servo_layout)
         left_layout.addWidget(servo_group)
@@ -464,6 +470,16 @@ class MainWindow(QMainWindow):
                     self.btn_rec.setChecked(False)
                     self.toggle_recording(False) 
 
+        # ★ サーボ動作中(MOVING)の場合のオレンジ枠点滅制御 (400ms周期)
+        if self.servo_status == 'MOVING':
+            self.ui_blink_count += 1
+            if self.ui_blink_count % 4 == 0:
+                self.blink_state = not self.blink_state
+                if self.blink_state:
+                    self.lbl_pot.setStyleSheet("border: 1.5px solid #ff9800; border-radius: 3px; padding: 1px; font-weight: bold;")
+                else:
+                    self.lbl_pot.setStyleSheet("border: 1.5px solid transparent; border-radius: 3px; padding: 1px; font-weight: bold;")
+
         if len(self.fx_data) == 0:
             return
 
@@ -516,7 +532,7 @@ class MainWindow(QMainWindow):
                 self.lbl_ch[i].setStyleSheet("color: gray;")
             self.lbl_ch[i].setText(f"{avg_sg[i]:.4f} [V]")
             
-        self.lbl_fm[0].setText(f"{avg_fx:.4f}")
+        self.lbl_fm[0].setText(f"{avg_fx:.44f}" if hasattr(self, 'dummy') else f"{avg_fx:.4f}")
         self.lbl_fm[1].setText(f"{avg_fy:.4f}")
         self.lbl_fm[2].setText(f"{avg_fz:.4f}")
         self.lbl_fm[3].setText(f"{avg_mx:.4f}")
@@ -543,17 +559,15 @@ class MainWindow(QMainWindow):
         if self.worker:
             if checked:
                 memo = self.input_memo.text()
-                sail_area_str = self.input_sail_area.text() # テキストボックスの値を読み出し
+                sail_area_str = self.input_sail_area.text() 
                 duration_str = f"{self.spin_duration.value()} s" if self.btn_timer_toggle.isChecked() else "Manual"
                 
-                # 直近の平均風速を計算
                 avg_wind = 0.0
                 if len(self.wind_data) > 0:
                     avg_wind_calc = np.nanmean(list(self.wind_data)[-UI_MA_WINDOW:])
                     if not np.isnan(avg_wind_calc):
                         avg_wind = float(avg_wind_calc)
                 
-                # ★ サーボモードがFeedback(インデックス1)か判定し、目標角度文字列を取得
                 is_feedback = (self.combo_mode.currentIndex() == 1)
                 target_angle = self.input_angle.text()
                 
@@ -613,14 +627,13 @@ class MainWindow(QMainWindow):
             self.btn_rec.setChecked(False)
             self.btn_rec.setEnabled(False)
             self.lbl_rec_status.setText("Disconnected")
-            self.lbl_status.setText("Disconnected")
-            self.lbl_status.setStyleSheet("color: gray; padding: 5px; font-size: 14px;")
+            self.servo_status = 'READY'
+            self.lbl_pot.setStyleSheet("border: 1.5px solid transparent; padding: 1px;")
 
     @Slot()
     def on_worker_connected(self):
         self.send_servo_raw(self.servo_center_val)
         self.btn_zero_pot.setEnabled(True)
-        self.lbl_status.setText("Connected / Ready")
 
     def set_zero_pot(self):
         if len(self.pot_data) > 0:
@@ -662,7 +675,6 @@ class MainWindow(QMainWindow):
         else:
             display_fm = fm_array
 
-        # ★ メインスレッド（UI描画側）でのCL, CD計算時にも現在のテキストボックスの値を反映
         try:
             sail_area_val = float(self.input_sail_area.text())
         except ValueError:
@@ -697,21 +709,21 @@ class MainWindow(QMainWindow):
 
     def move_to_center(self):
         self.send_servo_raw(self.servo_center_val)
-        self.lbl_status.setText(f"Moved to Center: {self.servo_center_val:.1f} deg")
-        self.lbl_status.setStyleSheet("color: black; padding: 5px; font-size: 14px;")
+        self.servo_status = 'READY'
+        self.lbl_pot.setStyleSheet("border: 1.5px solid transparent; padding: 1px;")
 
     def start_servo_control(self):
         if self.worker is None: return
         self.feedback_timer.stop()
-        self.lbl_status.setStyleSheet("color: black; padding: 5px; font-size: 14px;")
         
         try:
             val = float(self.input_angle.text())
             if self.combo_mode.currentIndex() == 0:
                 self.send_servo_raw(val)
-                self.lbl_status.setText(f"Sent Direct Command: {val:.1f} deg")
+                self.servo_status = 'READY'
+                self.lbl_pot.setStyleSheet("border: 1.5px solid transparent; padding: 1px;")
             else:
-                # ★ 変数の初期化と大移動の開始
+                # ★ フィードバック制御開始
                 self.feedback_target = val
                 self.feedback_iteration = 0
                 self.rough_move_timeout = 0
@@ -719,15 +731,17 @@ class MainWindow(QMainWindow):
                 self.prev_pot_display = None
                 self.feedback_state = 'ROUGH_MOVING'
                 
-                self.send_servo_raw(self.servo_center_val + val)
-                self.lbl_status.setText(f"Target: {val:.1f} deg. Rough moving...")
-                self.lbl_status.setStyleSheet("color: blue; font-weight: bold; padding: 5px; font-size: 14px;")
+                # 移動開始とともにステータスを切り替え
+                self.servo_status = 'MOVING'
+                self.ui_blink_count = 0
+                self.blink_state = True
+                self.lbl_pot.setStyleSheet("border: 1.5px solid #ff9800; border-radius: 3px; padding: 1px; font-weight: bold;")
                 
-                # 大移動中は監視のため0.5秒間隔で高速チェック
+                self.send_servo_raw(self.servo_center_val + val)
                 self.feedback_timer.start(500) 
         except ValueError:
-            self.lbl_status.setText("Error: Invalid Number")
-            self.lbl_status.setStyleSheet("color: red; font-weight: bold; padding: 5px; font-size: 14px;")
+            self.servo_status = 'ERROR'
+            self.lbl_pot.setStyleSheet("border: 1.5px solid #dc3545; border-radius: 3px; padding: 1px; font-weight: bold;")
 
     # ★ 3段階フィードバック制御処理
     def process_feedback_loop(self):
@@ -737,7 +751,6 @@ class MainWindow(QMainWindow):
         if self.feedback_state == 'ROUGH_MOVING':
             self.rough_move_timeout += 1
             
-            # 回転が停止したか（0.5秒での変化量が0.2度未満か）を監視
             if self.prev_pot_display is not None:
                 delta = abs(self.current_pot_display - self.prev_pot_display)
                 if delta < 0.2:
@@ -746,35 +759,32 @@ class MainWindow(QMainWindow):
                     self.rough_stop_count = 0
             self.prev_pot_display = self.current_pot_display
 
-            # 誤差が2度以内、または「1秒間(2カウント)動きが完全に止まった」ら微調整へ強制移行
             if abs(error) <= 2.0 or self.rough_stop_count >= 2:
                 self.feedback_state = 'ADJUSTING'
                 self.feedback_iteration = 0
-                self.feedback_timer.setInterval(FEEDBACK_INTERVAL) # 微調整は3秒間隔
-                self.lbl_status.setText(f"Rough move done. Starting fine adjustment (Diff: {error:.2f} deg)")
+                self.feedback_timer.setInterval(FEEDBACK_INTERVAL) 
+                print(f"[Servo Log] Rough move done. Starting fine adjustment (Diff: {error:.2f} deg)")
                 
-                # すぐに1回目の微調整コマンドを発行して待機時間を短縮
                 new_command = self.last_servo_command + (error * FEEDBACK_DAMPING)
                 self.send_servo_raw(new_command)
                 return
 
-            if self.rough_move_timeout > 120: # 60秒でタイムアウト
-                self.finish_feedback(f"Rough move timeout! (Diff: {error:.2f} deg)", success=False)
+            if self.rough_move_timeout > 120: 
+                self.finish_feedback(f"[Servo Log] Rough move timeout! (Diff: {error:.2f} deg)", success=False)
             else:
-                self.lbl_status.setText(f"Rough moving... (Diff: {error:.2f} deg)")
+                print(f"[Servo Log] Rough moving... (Diff: {error:.2f} deg)")
             return
 
         # --- 状態3: 待機後の最終確認 (WAITING) ---
         elif self.feedback_state == 'WAITING':
             if abs(error) <= FEEDBACK_TOLERANCE_FINAL:
-                self.finish_feedback(f"Target Reached! [ OK ] (Diff: {error:.2f} deg)", success=True)
+                self.finish_feedback(f"[Servo Log] Target Reached! [ OK ] (Diff: {error:.2f} deg)", success=True)
                 return
             else:
                 self.feedback_state = 'ADJUSTING'
                 self.feedback_timer.setInterval(FEEDBACK_INTERVAL)
-                self.lbl_status.setText(f"Verification failed. Readjusting... (Diff: {error:.2f} deg)")
+                print(f"[Servo Log] Verification failed. Readjusting... (Diff: {error:.2f} deg)")
                 
-                # ここでもすぐに微調整コマンドを発行
                 new_command = self.last_servo_command + (error * FEEDBACK_DAMPING)
                 self.send_servo_raw(new_command)
                 return
@@ -785,25 +795,29 @@ class MainWindow(QMainWindow):
             
             if abs(error) <= FEEDBACK_TOLERANCE_STRICT:
                 self.feedback_state = 'WAITING'
-                self.lbl_status.setText(f"Almost there... Waiting 1s to verify (Diff: {error:.2f} deg)")
-                self.feedback_timer.setInterval(1000) # 1秒後に最終確認
+                print(f"[Servo Log] Almost there... Waiting 1s to verify (Diff: {error:.2f} deg)")
+                self.feedback_timer.setInterval(1000) 
                 return
 
             if self.feedback_iteration >= MAX_ITERATIONS:
-                self.finish_feedback(f"Timeout. (Diff: {error:.2f} deg)", success=False)
+                self.finish_feedback(f"[Servo Log] Timeout. (Diff: {error:.2f} deg)", success=False)
                 return
 
             new_command = self.last_servo_command + (error * FEEDBACK_DAMPING)
             self.send_servo_raw(new_command)
-            self.lbl_status.setText(f"Adjusting... Iter:{self.feedback_iteration} Error:{error:.2f} deg")
+            print(f"[Servo Log] Adjusting... Iter:{self.feedback_iteration} Error:{error:.2f} deg")
 
     def finish_feedback(self, msg, success=False):
         self.feedback_timer.stop()
-        self.lbl_status.setText(msg)
+        print(msg) # コンソールへログを出力
+        
+        # ★ 結果に応じてRotationラベルの枠線を固定
         if success:
-            self.lbl_status.setStyleSheet("background-color: #28a745; color: white; font-weight: bold; padding: 5px; border-radius: 5px; font-size: 16px;")
+            self.servo_status = 'OK'
+            self.lbl_pot.setStyleSheet("border: 1.5px solid #28a745; border-radius: 3px; padding: 1px; font-weight: bold;")
         else:
-            self.lbl_status.setStyleSheet("background-color: #dc3545; color: white; font-weight: bold; padding: 5px; border-radius: 5px; font-size: 16px;")
+            self.servo_status = 'ERROR'
+            self.lbl_pot.setStyleSheet("border: 1.5px solid #dc3545; border-radius: 3px; padding: 1px; font-weight: bold;")
 
     def closeEvent(self, event):
         if self.worker:
