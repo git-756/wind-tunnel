@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QSpinBox)
 from PySide6.QtCore import QThread, Signal, Slot, Qt, QTimer
 
-SAIL_AREA = 0.25 
+DEFAULT_SAIL_AREA = 0.1875 # デフォルトのセール面積
 
 CALIB_MATRIX = np.array([
     [0.03259, 0.04063, 0.16369, 12.41458, -0.17227, -12.09472],
@@ -51,11 +51,18 @@ class SerialWorker(QThread):
         self.ser = None
         self.csv_file = None
         self.csv_writer = None
+        self.sail_area_val = DEFAULT_SAIL_AREA
 
-    def set_recording(self, state, memo="", sail_area="", duration_str="", avg_wind=0.0):
+    def set_recording(self, state, memo="", sail_area="", duration_str="", avg_wind=0.0, is_feedback=False, target_angle=""):
         self.is_recording = state
         if state:
             os.makedirs(SAVE_DIR, exist_ok=True)
+            
+            # テキストボックスから渡されたセールの面積を数値変換して保持
+            try:
+                self.sail_area_val = float(sail_area)
+            except ValueError:
+                self.sail_area_val = DEFAULT_SAIL_AREA
             
             # 平均風速によるサフィックスの決定
             suffix = ""
@@ -63,6 +70,10 @@ class SerialWorker(QThread):
                 suffix = "_Tare"
             elif avg_wind >= 4.0:
                 suffix = "_test"
+                
+            # ★ サーボコントロールのモードがfeedbackの場合、テキストボックスの角度を末尾に追加
+            if is_feedback and target_angle:
+                suffix += f"_{target_angle}"
                 
             filename = datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + suffix + ".csv"
             filepath = os.path.join(SAVE_DIR, filename)
@@ -72,7 +83,7 @@ class SerialWorker(QThread):
             
             self.csv_writer.writerow(["# --- Wind Tunnel Test Metadata ---"])
             self.csv_writer.writerow(["# Memo:", memo])
-            self.csv_writer.writerow(["# Sail Area [m^2]:", sail_area])
+            self.csv_writer.writerow(["# Sail Area [m^2]:", self.sail_area_val])
             self.csv_writer.writerow(["# Timer Setting:", duration_str])
             self.csv_writer.writerow([]) 
             
@@ -130,8 +141,8 @@ class SerialWorker(QThread):
                                     q = 0.5 * rho * (wind ** 2) if not np.isnan(rho) and not np.isnan(wind) else np.nan
                                     
                                     if not np.isnan(q) and q > 0.5:
-                                        cl_csv = fy / (q * SAIL_AREA)
-                                        cd_csv = -fx / (q * SAIL_AREA)
+                                        cl_csv = fy / (q * self.sail_area_val)
+                                        cd_csv = -fx / (q * self.sail_area_val)
                                     else:
                                         cl_csv = 0.0
                                         cd_csv = 0.0
@@ -248,8 +259,9 @@ class MainWindow(QMainWindow):
         self.lbl_rec_status = QLabel("Standby")
         self.lbl_rec_status.setStyleSheet("color: gray; font-weight: bold; font-size: 14px;")
         
+        # ★ 計測時間の表示文字色を黒から白に変更
         self.lbl_elapsed = QLabel("0.0 s")
-        self.lbl_elapsed.setStyleSheet("color: black; font-weight: bold; font-size: 16px;")
+        self.lbl_elapsed.setStyleSheet("color: white; font-weight: bold; font-size: 16px;")
         self.lbl_elapsed.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         
         status_layout.addWidget(self.lbl_rec_status)
@@ -264,7 +276,8 @@ class MainWindow(QMainWindow):
 
         self.spin_duration = QSpinBox()
         self.spin_duration.setRange(1, 36000)
-        self.spin_duration.setValue(60)       
+        # ★ 計測時間のデフォルトを120sに変更
+        self.spin_duration.setValue(120)       
         self.spin_duration.setSuffix(" s")
         self.spin_duration.setEnabled(False)  
 
@@ -279,6 +292,13 @@ class MainWindow(QMainWindow):
         self.input_memo.setPlaceholderText("Test description, conditions, etc.")
         memo_layout.addWidget(self.input_memo)
         log_layout.addLayout(memo_layout)
+
+        # ★ SAIL_AREAを変更可能なテキストボックスとして追加
+        sail_layout = QHBoxLayout()
+        sail_layout.addWidget(QLabel("Sail Area [m^2]:"))
+        self.input_sail_area = QLineEdit(str(DEFAULT_SAIL_AREA))
+        sail_layout.addWidget(self.input_sail_area)
+        log_layout.addLayout(sail_layout)
 
         self.btn_rec = QPushButton("Start REC (OFF)")
         self.btn_rec.setCheckable(True)
@@ -523,6 +543,7 @@ class MainWindow(QMainWindow):
         if self.worker:
             if checked:
                 memo = self.input_memo.text()
+                sail_area_str = self.input_sail_area.text() # テキストボックスの値を読み出し
                 duration_str = f"{self.spin_duration.value()} s" if self.btn_timer_toggle.isChecked() else "Manual"
                 
                 # 直近の平均風速を計算
@@ -532,7 +553,11 @@ class MainWindow(QMainWindow):
                     if not np.isnan(avg_wind_calc):
                         avg_wind = float(avg_wind_calc)
                 
-                self.worker.set_recording(True, memo, str(SAIL_AREA), duration_str, avg_wind)
+                # ★ サーボモードがFeedback(インデックス1)か判定し、目標角度文字列を取得
+                is_feedback = (self.combo_mode.currentIndex() == 1)
+                target_angle = self.input_angle.text()
+                
+                self.worker.set_recording(True, memo, sail_area_str, duration_str, avg_wind, is_feedback, target_angle)
                 self.record_start_time = datetime.now()
                 self.lbl_rec_status.setText("● REC")
                 self.lbl_rec_status.setStyleSheet("color: red; font-weight: bold; font-size: 14px;")
@@ -637,9 +662,15 @@ class MainWindow(QMainWindow):
         else:
             display_fm = fm_array
 
+        # ★ メインスレッド（UI描画側）でのCL, CD計算時にも現在のテキストボックスの値を反映
+        try:
+            sail_area_val = float(self.input_sail_area.text())
+        except ValueError:
+            sail_area_val = DEFAULT_SAIL_AREA
+
         if not np.isnan(q) and q > 0.5: 
-            cl = display_fm[1] / (q * SAIL_AREA)
-            cd = -display_fm[0] / (q * SAIL_AREA)
+            cl = display_fm[1] / (q * sail_area_val)
+            cd = -display_fm[0] / (q * sail_area_val)
         else:
             cl = 0.0
             cd = 0.0

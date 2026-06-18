@@ -8,5 +8,6 @@ dependencies = [
     "numpy>=2.2.6",
     "pandas>=2.3.3",
     "pyqtgraph>=0.14.0",
+    "pyserial>=3.5",
     "pyside6<6.8",
 ]
