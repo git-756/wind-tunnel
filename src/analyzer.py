@@ -1,24 +1,23 @@
 import sys
+import os
+import glob
 import pandas as pd
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QHBoxLayout, QPushButton, QLabel, QFileDialog, 
                                QMessageBox, QFormLayout, QLineEdit, QGroupBox,
-                               QSpinBox, QTableWidget, QTableWidgetItem, QHeaderView)
+                               QTableWidget, QTableWidgetItem, QHeaderView)
 from PySide6.QtCore import Qt
 
 class WindTunnelAnalyzer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Wind Tunnel Data Analyzer (Discrete Point Mode)")
+        self.setWindowTitle("Wind Tunnel Data Analyzer (Batch Folder Mode)")
         self.resize(1300, 900)
 
         # 解析結果を貯めるデータフレーム
         self.results_df = pd.DataFrame(columns=['Angle', 'CL', 'CD', 'L_D', 'AvgWind', 'AvgRho', 'Net_Fy', 'Net_Fx'])
-        
-        self.current_tare_path = ""
-        self.current_test_path = ""
 
         self.setup_ui()
 
@@ -35,44 +34,26 @@ class WindTunnelAnalyzer(QMainWindow):
         # 1. パラメータ設定
         group_params = QGroupBox("1. Setup")
         form_params = QFormLayout()
-        self.input_area = QLineEdit("0.25")
+        self.input_area = QLineEdit("0.1875") # 前回のデフォルト値に合わせました
         form_params.addRow("Sail Area [m²]:", self.input_area)
         group_params.setLayout(form_params)
         left_layout.addWidget(group_params)
 
-        # 2. データポイントの追加
-        group_add = QGroupBox("2. Add Data Point")
-        vbox_add = QVBoxLayout()
+        # 2. フォルダ一括自動解析
+        group_batch = QGroupBox("2. Batch Directory Analysis")
+        vbox_batch = QVBoxLayout()
         
-        form_add = QFormLayout()
-        self.spin_angle = QSpinBox()
-        self.spin_angle.setRange(-180, 180)
-        self.spin_angle.setValue(0)
-        self.spin_angle.setSuffix(" deg")
-        form_add.addRow("Target Angle:", self.spin_angle)
-        vbox_add.addLayout(form_add)
+        self.btn_analyze_dir = QPushButton("Select Folder & Analyze")
+        self.btn_analyze_dir.setStyleSheet("background-color: #28a745; color: white; font-weight: bold; padding: 12px;")
+        self.btn_analyze_dir.clicked.connect(self.select_and_analyze_dir)
+        vbox_batch.addWidget(self.btn_analyze_dir)
 
-        self.btn_tare = QPushButton("Select Tare CSV (Wind = 0)")
-        self.btn_tare.clicked.connect(self.select_tare)
-        self.lbl_tare = QLabel("No file selected")
-        self.lbl_tare.setStyleSheet("color: gray; font-size: 10px;")
-        vbox_add.addWidget(self.btn_tare)
-        vbox_add.addWidget(self.lbl_tare)
+        self.lbl_status_info = QLabel("Filename rule:\n..._[Tare/test]_[Angle].csv")
+        self.lbl_status_info.setStyleSheet("color: gray; font-size: 11px;")
+        vbox_batch.addWidget(self.lbl_status_info)
 
-        self.btn_test = QPushButton("Select Test CSV (Wind > 0)")
-        self.btn_test.clicked.connect(self.select_test)
-        self.lbl_test = QLabel("No file selected")
-        self.lbl_test.setStyleSheet("color: gray; font-size: 10px;")
-        vbox_add.addWidget(self.btn_test)
-        vbox_add.addWidget(self.lbl_test)
-
-        self.btn_calc = QPushButton("Calculate & Add Point")
-        self.btn_calc.setStyleSheet("background-color: #28a745; color: white; font-weight: bold; padding: 10px; margin-top: 10px;")
-        self.btn_calc.clicked.connect(self.calculate_and_add)
-        vbox_add.addWidget(self.btn_calc)
-
-        group_add.setLayout(vbox_add)
-        left_layout.addWidget(group_add)
+        group_batch.setLayout(vbox_batch)
+        left_layout.addWidget(group_batch)
 
         # 3. 解析結果のリスト (テーブル)
         group_table = QGroupBox("3. Processed Data Points")
@@ -161,100 +142,145 @@ class WindTunnelAnalyzer(QMainWindow):
 
         return df[forces].mean()
 
-    # --- UIアクション ---
-    def select_tare(self):
-        filepath, _ = QFileDialog.getOpenFileName(self, "Select Tare CSV", "", "CSV Files (*.csv)")
-        if filepath:
-            self.current_tare_path = filepath
-            filename = filepath.split('/')[-1] if '/' in filepath else filepath.split('\\')[-1]
-            self.lbl_tare.setText(filename)
-
-    def select_test(self):
-        filepath, _ = QFileDialog.getOpenFileName(self, "Select Test CSV", "", "CSV Files (*.csv)")
-        if filepath:
-            self.current_test_path = filepath
-            filename = filepath.split('/')[-1] if '/' in filepath else filepath.split('\\')[-1]
-            self.lbl_test.setText(filename)
-
-    def calculate_and_add(self):
-        if not self.current_tare_path or not self.current_test_path:
-            QMessageBox.warning(self, "Warning", "Please select BOTH Tare and Test CSV files.")
+    # --- UIアクション (フォルダ一括解析) ---
+    def select_and_analyze_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Data Directory", "")
+        if not dir_path:
             return
 
+        # すでにデータがある場合は上書き確認
+        if len(self.results_df) > 0:
+            reply = QMessageBox.question(self, "Clear Data?", "Clear currently loaded data before batch analysis?",
+                                         QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self.results_df = pd.DataFrame(columns=['Angle', 'CL', 'CD', 'L_D', 'AvgWind', 'AvgRho', 'Net_Fy', 'Net_Fx'])
+
+        csv_files = glob.glob(os.path.join(dir_path, "*.csv"))
+        if not csv_files:
+            QMessageBox.warning(self, "No Files", "No CSV files found in the selected folder.")
+            return
+
+        # 角度ごとにTareとTestをマッピングする辞書を構築
+        # 構造: { angle(float): {'tare': filepath, 'test': filepath} }
+        pair_map = {}
+
+        for filepath in csv_files:
+            filename = os.path.basename(filepath)
+            name_we, _ = os.path.splitext(filename)
+            parts = name_we.split('_')
+            
+            # 命名規則「..._[シーン]_[角度]」を満たすため最低3要素必要
+            if len(parts) < 3:
+                continue 
+            
+            try:
+                angle_str = parts[-1]        # 末尾：角度
+                scene_str = parts[-2].lower() # その前：シーン
+                
+                angle = float(angle_str)
+                
+                if 'tare' in scene_str:
+                    scene = 'tare'
+                elif 'test' in scene_str:
+                    scene = 'test'
+                else:
+                    continue # どちらでもない場合はスキップ
+                
+                if angle not in pair_map:
+                    pair_map[angle] = {'tare': None, 'test': None}
+                
+                pair_map[angle][scene] = filepath
+                
+            except ValueError:
+                continue # 角度への変換失敗時はスキップ
+
+        # パラメータ取得
         try:
             area = float(self.input_area.text())
-            angle = float(self.spin_angle.value())
+        except ValueError:
+            QMessageBox.warning(self, "Warning", "Invalid Sail Area value.")
+            return
 
-            if angle in self.results_df['Angle'].values:
-                reply = QMessageBox.question(self, "Overwrite?", f"Data for {angle} deg already exists. Overwrite?",
-                                             QMessageBox.Yes | QMessageBox.No)
-                if reply == QMessageBox.No:
-                    return
-                self.results_df = self.results_df[self.results_df['Angle'] != angle]
+        success_count = 0
+        skipped_angles = []
+        new_rows = []
 
-            # 各ファイルの平均値を算出
-            tare_means = self._get_mean_values(self.current_tare_path)
-            test_means = self._get_mean_values(self.current_test_path)
-
-            # 空力(Tare引き算)
-            net_fx = test_means['Fx(N)'] - tare_means['Fx(N)']
-            net_fy = test_means['Fy(N)'] - tare_means['Fy(N)']
-
-            # 動圧の計算
-            Tk = test_means['Temperature'] + 273.15
-            Es = 6.1078 * 10.0 ** ((7.5 * test_means['Temperature']) / (test_means['Temperature'] + 237.3))
-            Pv = Es * (test_means['Humidity'] / 100.0)
-            Pd = test_means['Pressure'] - Pv
-            rho = (Pd * 100.0 / (287.05 * Tk)) + (Pv * 100.0 / (461.495 * Tk))
+        # ペアリングされたデータを順次解析
+        for angle, pairs in pair_map.items():
+            tare_path = pairs['tare']
+            test_path = pairs['test']
             
-            q = 0.5 * rho * (test_means['AvgWind'] ** 2)
+            # TareとTestが揃っていない角度はスキップ
+            if not tare_path or not test_path:
+                skipped_angles.append(angle)
+                continue
+                
+            try:
+                tare_means = self._get_mean_values(tare_path)
+                test_means = self._get_mean_values(test_path)
 
-            if q < 0.5:
-                QMessageBox.warning(self, "Warning", "Wind speed is too low (q < 0.5 Pa). Cannot calculate coefficients accurately.")
-                return
+                # 空力(Tare引き算)
+                net_fx = test_means['Fx(N)'] - tare_means['Fx(N)']
+                net_fy = test_means['Fy(N)'] - tare_means['Fy(N)']
 
-            # 係数の計算
-            cl = net_fy / (q * area)
-            cd = -net_fx / (q * area)
-            l_d = cl / cd if cd != 0 else 0
+                # 動圧の計算
+                Tk = test_means['Temperature'] + 273.15
+                Es = 6.1078 * 10.0 ** ((7.5 * test_means['Temperature']) / (test_means['Temperature'] + 237.3))
+                Pv = Es * (test_means['Humidity'] / 100.0)
+                Pd = test_means['Pressure'] - Pv
+                rho = (Pd * 100.0 / (287.05 * Tk)) + (Pv * 100.0 / (461.495 * Tk))
+                
+                q = 0.5 * rho * (test_means['AvgWind'] ** 2)
 
-            # 新しい行の作成
-            new_row = pd.DataFrame([{
-                'Angle': angle, 'CL': cl, 'CD': cd, 'L_D': l_d, 
-                'AvgWind': test_means['AvgWind'], 'AvgRho': rho,
-                'Net_Fy': net_fy, 'Net_Fx': net_fx
-            }])
+                if q < 0.5:
+                    continue # 風速不足時はスキップ
+
+                # 係数の計算
+                cl = net_fy / (q * area)
+                cd = net_fx / (q * area) # ★ 符号を修正（マイナスを除去）
+                l_d = cl / cd if cd != 0 else 0
+
+                new_rows.append({
+                    'Angle': angle, 'CL': cl, 'CD': cd, 'L_D': l_d, 
+                    'AvgWind': test_means['AvgWind'], 'AvgRho': rho,
+                    'Net_Fy': net_fy, 'Net_Fx': net_fx
+                })
+                success_count += 1
+            except Exception as e:
+                print(f"Failed to process angle {angle}: {e}")
+                continue
+
+        if new_rows:
+            new_df = pd.DataFrame(new_rows)
+            # 重複する古い角度データを削除して結合
+            if len(self.results_df) > 0:
+                self.results_df = self.results_df[~self.results_df['Angle'].isin(new_df['Angle'])]
             
-            self.results_df = pd.concat([self.results_df, new_row], ignore_index=True)
-            
-            # ★ 修正ポイント 1: データフレーム全体を明示的に float 型に変換し、object型が混入するのを防ぐ
+            self.results_df = pd.concat([self.results_df, new_df], ignore_index=True)
             self.results_df = self.results_df.astype(float)
-            
             self.results_df = self.results_df.sort_values(by='Angle').reset_index(drop=True)
-
-            # UIの更新
+            
+            # UI更新
             self.update_ui()
             
-            # 入力を次に備えてクリア (角度を自動で1度進める)
-            self.spin_angle.setValue(int(angle) + 1)
-            self.current_tare_path = ""
-            self.current_test_path = ""
-            self.lbl_tare.setText("No file selected")
-            self.lbl_test.setText("No file selected")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Calculation failed:\n{str(e)}")
+            # 完了通知文の作成
+            msg = f"Successfully processed {success_count} data points."
+            if skipped_angles:
+                msg += f"\n\n[Skipped Incomplete Angles]\n(Missing Tare or Test): {sorted(skipped_angles)}"
+            QMessageBox.information(self, "Analysis Complete", msg)
+        else:
+            QMessageBox.warning(self, "No Valid Data", "No valid Tare/Test pairs found in the selected folder.")
 
     def update_ui(self):
         # テーブルの更新
         self.table.setRowCount(len(self.results_df))
         for row, idx in enumerate(self.results_df.index):
-            self.table.setItem(row, 0, QTableWidgetItem(f"{self.results_df.loc[idx, 'Angle']:.0f}"))
+            self.table.setItem(row, 0, QTableWidgetItem(f"{self.results_df.loc[idx, 'Angle']:.1f}"))
             self.table.setItem(row, 1, QTableWidgetItem(f"{self.results_df.loc[idx, 'CL']:.4f}"))
             self.table.setItem(row, 2, QTableWidgetItem(f"{self.results_df.loc[idx, 'CD']:.4f}"))
             self.table.setItem(row, 3, QTableWidgetItem(f"{self.results_df.loc[idx, 'L_D']:.2f}"))
 
-        # ★ 修正ポイント 2: グラフに渡すデータを完全に純粋なNumpyのfloat配列に強制変換する
+        # グラフデータの同期
         angles = np.array(self.results_df['Angle'].values, dtype=float)
         cls = np.array(self.results_df['CL'].values, dtype=float)
         cds = np.array(self.results_df['CD'].values, dtype=float)
