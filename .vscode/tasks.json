@@ -1,0 +1,35 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Arduino: Compile (検証)",
+            "type": "shell",
+            "command": "arduino-cli",
+            "args": [
+                "compile",
+                "--fqbn",
+                "arduino:renesas_uno:unor4wifi",
+                "${file}"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Arduino: Upload (書き込み)",
+            "type": "shell",
+            "command": "arduino-cli",
+            "args": [
+                "upload",
+                "-p",
+                "/dev/ttyACM0",
+                "--fqbn",
+                "arduino:renesas_uno:unor4wifi",
+                "${file}"
+            ],
+            "problemMatcher": []
+        }
+    ]
+}
