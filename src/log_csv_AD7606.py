@@ -31,12 +31,11 @@ UI_MA_WINDOW = 10
 BAUD_RATE = 115200
 SAVE_DIR = "result_csv"
 
-# ★ フィードバックのパラメータを最適化
 FEEDBACK_TOLERANCE_STRICT = 0.15  
 FEEDBACK_TOLERANCE_FINAL = 0.25   
 FEEDBACK_INTERVAL = 3000         
-MAX_ITERATIONS = 20              # タイムアウトしにくいように20回に増加
-FEEDBACK_DAMPING = 0.9           # 0.9へ変更。より積極的に誤差を詰める
+MAX_ITERATIONS = 20              
+FEEDBACK_DAMPING = 0.9           
 
 class SerialWorker(QThread):
     data_received = Signal(float, float, float, float, float, object, object, float)
@@ -58,20 +57,17 @@ class SerialWorker(QThread):
         if state:
             os.makedirs(SAVE_DIR, exist_ok=True)
             
-            # テキストボックスから渡されたセールの面積を数値変換して保持
             try:
                 self.sail_area_val = float(sail_area)
             except ValueError:
                 self.sail_area_val = DEFAULT_SAIL_AREA
             
-            # 平均風速によるサフィックスの決定
             suffix = ""
             if avg_wind <= 0.3:
                 suffix = "_Tare"
             elif avg_wind >= 4.0:
                 suffix = "_test"
                 
-            # ★ サーボコントロールのモードがfeedbackの場合、テキストボックスの角度を末尾に追加
             if is_feedback and target_angle:
                 suffix += f"_{target_angle}"
                 
@@ -175,6 +171,16 @@ class SerialWorker(QThread):
             except Exception as e:
                 print(f"Send Error: {e}")
 
+    # ★ リレー制御コマンド送信メソッド
+    def send_relay_command(self, relay_num, state):
+        if self.ser and self.ser.is_open:
+            try:
+                cmd_str = f"R{relay_num}_{'ON' if state else 'OFF'}\n"
+                self.ser.write(cmd_str.encode('utf-8'))
+                print(f"[Relay Command] Sent: {cmd_str.strip()}")
+            except Exception as e:
+                print(f"Relay Send Error: {e}")
+
     def stop(self):
         self.is_running = False
         self.wait()
@@ -216,12 +222,10 @@ class MainWindow(QMainWindow):
         self.feedback_target = 0.0
         self.feedback_iteration = 0
         
-        # ★ サーボの視覚的ステータス管理用の変数
-        self.servo_status = 'READY'  # 'READY', 'MOVING', 'OK', 'ERROR'
+        self.servo_status = 'READY'
         self.blink_state = False
         self.ui_blink_count = 0
 
-        # ★ フィードバック状態管理用フラグ・変数
         self.feedback_state = 'ROUGH_MOVING'
         self.rough_move_timeout = 0
         self.rough_stop_count = 0
@@ -264,7 +268,6 @@ class MainWindow(QMainWindow):
         self.lbl_rec_status = QLabel("Standby")
         self.lbl_rec_status.setStyleSheet("color: gray; font-weight: bold; font-size: 14px;")
         
-        # ★ 計測時間の表示文字色を黒から白に変更
         self.lbl_elapsed = QLabel("0.0 s")
         self.lbl_elapsed.setStyleSheet("color: white; font-weight: bold; font-size: 16px;")
         self.lbl_elapsed.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -281,7 +284,6 @@ class MainWindow(QMainWindow):
 
         self.spin_duration = QSpinBox()
         self.spin_duration.setRange(1, 36000)
-        # ★ 計測時間のデフォルトを120sに変更
         self.spin_duration.setValue(120)       
         self.spin_duration.setSuffix(" s")
         self.spin_duration.setEnabled(False)  
@@ -298,7 +300,6 @@ class MainWindow(QMainWindow):
         memo_layout.addWidget(self.input_memo)
         log_layout.addLayout(memo_layout)
 
-        # ★ SAIL_AREAを変更可能なテキストボックスとして追加
         sail_layout = QHBoxLayout()
         sail_layout.addWidget(QLabel("Sail Area [m^2]:"))
         self.input_sail_area = QLineEdit(str(DEFAULT_SAIL_AREA))
@@ -317,9 +318,6 @@ class MainWindow(QMainWindow):
 
         sensor_group = QGroupBox(f"Real-time UI (0.5s Avg) / Graph (20Hz Raw)")
         form_layout = QFormLayout()
-        font = self.font()
-        font.setPointSize(12)
-        font.setBold(True)
 
         self.lbl_temp = QLabel("--.- °C")
         self.lbl_hum = QLabel("--.- %")
@@ -335,7 +333,6 @@ class MainWindow(QMainWindow):
 
         self.lbl_wind = QLabel("--.- m/s")
         
-        # ★ ガタつき防止用の初期透明枠を適用
         self.lbl_pot = QLabel("--.- deg")
         self.lbl_pot.setStyleSheet("border: 1.5px solid transparent; padding: 1px;")
         
@@ -385,6 +382,26 @@ class MainWindow(QMainWindow):
         sensor_group.setLayout(form_layout)
         left_layout.addWidget(sensor_group)
 
+        # ★ Relay Control Group (G3NA-220B SSR)
+        relay_group = QGroupBox("Relay Control (G3NA SSR)")
+        relay_layout = QHBoxLayout()
+        
+        self.btn_relay1 = QPushButton("Relay 1: OFF")
+        self.btn_relay1.setCheckable(True)
+        self.btn_relay1.setStyleSheet("background-color: #e0e0e0; color: black; font-weight: bold; padding: 8px;")
+        self.btn_relay1.clicked.connect(self.toggle_relay1)
+        
+        self.btn_relay2 = QPushButton("Relay 2: OFF")
+        self.btn_relay2.setCheckable(True)
+        self.btn_relay2.setStyleSheet("background-color: #e0e0e0; color: black; font-weight: bold; padding: 8px;")
+        self.btn_relay2.clicked.connect(self.toggle_relay2)
+        
+        relay_layout.addWidget(self.btn_relay1)
+        relay_layout.addWidget(self.btn_relay2)
+        relay_group.setLayout(relay_layout)
+        left_layout.addWidget(relay_group)
+
+        # Servo Control Group
         servo_group = QGroupBox("Servo Control")
         servo_layout = QVBoxLayout()
         base_layout = QHBoxLayout()
@@ -411,8 +428,6 @@ class MainWindow(QMainWindow):
         ctrl_layout.addWidget(self.btn_send)
         ctrl_layout.addWidget(self.btn_center)
         servo_layout.addLayout(ctrl_layout)
-        
-        # ★ 画面縦幅圧縮のため、最下部にあった独立したステータスラベル(lbl_status)は削除しました
         
         servo_group.setLayout(servo_layout)
         left_layout.addWidget(servo_group)
@@ -449,6 +464,28 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(left_panel)
         main_layout.addWidget(right_panel, stretch=1)
 
+    # ★ リレー1のトグル処理
+    def toggle_relay1(self, checked):
+        if checked:
+            self.btn_relay1.setText("Relay 1: ON")
+            self.btn_relay1.setStyleSheet("background-color: #28a745; color: white; font-weight: bold; padding: 8px;")
+        else:
+            self.btn_relay1.setText("Relay 1: OFF")
+            self.btn_relay1.setStyleSheet("background-color: #e0e0e0; color: black; font-weight: bold; padding: 8px;")
+        if self.worker:
+            self.worker.send_relay_command(1, checked)
+
+    # ★ リレー2のトグル処理
+    def toggle_relay2(self, checked):
+        if checked:
+            self.btn_relay2.setText("Relay 2: ON")
+            self.btn_relay2.setStyleSheet("background-color: #28a745; color: white; font-weight: bold; padding: 8px;")
+        else:
+            self.btn_relay2.setText("Relay 2: OFF")
+            self.btn_relay2.setStyleSheet("background-color: #e0e0e0; color: black; font-weight: bold; padding: 8px;")
+        if self.worker:
+            self.worker.send_relay_command(2, checked)
+
     def toggle_timer_mode(self, checked):
         if checked:
             self.btn_timer_toggle.setText("Timer: ON")
@@ -470,7 +507,6 @@ class MainWindow(QMainWindow):
                     self.btn_rec.setChecked(False)
                     self.toggle_recording(False) 
 
-        # ★ サーボ動作中(MOVING)の場合のオレンジ枠点滅制御 (400ms周期)
         if self.servo_status == 'MOVING':
             self.ui_blink_count += 1
             if self.ui_blink_count % 4 == 0:
@@ -532,7 +568,7 @@ class MainWindow(QMainWindow):
                 self.lbl_ch[i].setStyleSheet("color: gray;")
             self.lbl_ch[i].setText(f"{avg_sg[i]:.4f} [V]")
             
-        self.lbl_fm[0].setText(f"{avg_fx:.44f}" if hasattr(self, 'dummy') else f"{avg_fx:.4f}")
+        self.lbl_fm[0].setText(f"{avg_fx:.4f}")
         self.lbl_fm[1].setText(f"{avg_fy:.4f}")
         self.lbl_fm[2].setText(f"{avg_fz:.4f}")
         self.lbl_fm[3].setText(f"{avg_mx:.4f}")
@@ -723,7 +759,6 @@ class MainWindow(QMainWindow):
                 self.servo_status = 'READY'
                 self.lbl_pot.setStyleSheet("border: 1.5px solid transparent; padding: 1px;")
             else:
-                # ★ フィードバック制御開始
                 self.feedback_target = val
                 self.feedback_iteration = 0
                 self.rough_move_timeout = 0
@@ -731,7 +766,6 @@ class MainWindow(QMainWindow):
                 self.prev_pot_display = None
                 self.feedback_state = 'ROUGH_MOVING'
                 
-                # 移動開始とともにステータスを切り替え
                 self.servo_status = 'MOVING'
                 self.ui_blink_count = 0
                 self.blink_state = True
@@ -743,11 +777,9 @@ class MainWindow(QMainWindow):
             self.servo_status = 'ERROR'
             self.lbl_pot.setStyleSheet("border: 1.5px solid #dc3545; border-radius: 3px; padding: 1px; font-weight: bold;")
 
-    # ★ 3段階フィードバック制御処理
     def process_feedback_loop(self):
         error = self.feedback_target - self.current_pot_display
 
-        # --- 状態1: 大移動 (ROUGH_MOVING) ---
         if self.feedback_state == 'ROUGH_MOVING':
             self.rough_move_timeout += 1
             
@@ -775,7 +807,6 @@ class MainWindow(QMainWindow):
                 print(f"[Servo Log] Rough moving... (Diff: {error:.2f} deg)")
             return
 
-        # --- 状態3: 待機後の最終確認 (WAITING) ---
         elif self.feedback_state == 'WAITING':
             if abs(error) <= FEEDBACK_TOLERANCE_FINAL:
                 self.finish_feedback(f"[Servo Log] Target Reached! [ OK ] (Diff: {error:.2f} deg)", success=True)
@@ -789,7 +820,6 @@ class MainWindow(QMainWindow):
                 self.send_servo_raw(new_command)
                 return
 
-        # --- 状態2: 微調整 (ADJUSTING) ---
         if self.feedback_state == 'ADJUSTING':
             self.feedback_iteration += 1
             
@@ -809,9 +839,8 @@ class MainWindow(QMainWindow):
 
     def finish_feedback(self, msg, success=False):
         self.feedback_timer.stop()
-        print(msg) # コンソールへログを出力
+        print(msg)
         
-        # ★ 結果に応じてRotationラベルの枠線を固定
         if success:
             self.servo_status = 'OK'
             self.lbl_pot.setStyleSheet("border: 1.5px solid #28a745; border-radius: 3px; padding: 1px; font-weight: bold;")

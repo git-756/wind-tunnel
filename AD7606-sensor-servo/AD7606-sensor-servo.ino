@@ -4,6 +4,10 @@
 #include <Servo.h>
 #include <SPI.h>
 
+// ★ リレー制御用ピン定義 (デジタル 2番, 3番ピン)
+const int RELAY1_PIN     = 2;  
+const int RELAY2_PIN     = 3;  
+
 const int PIN_AD_CS      = 10;
 const int PIN_AD_SDI     = 11; // MOSI
 const int PIN_AD_DOUTA   = 12; // MISO
@@ -28,11 +32,11 @@ const float SERVO_SPEED_DEG_PER_SEC = 15.0;
 
 const unsigned long SEND_INTERVAL = 50;   
 const unsigned long BME_INTERVAL  = 1000; 
-const unsigned long ADC_INTERVAL  = 1;    // ★ AD7606のサンプリング間隔を 1ms (1kHz) に設定
+const unsigned long ADC_INTERVAL  = 1;    // AD7606のサンプリング間隔 1ms (1kHz)
 
 unsigned long lastSendTime = 0;
 unsigned long lastBmeTime = 0;
-unsigned long lastAdcTime = 0;           // ★ ADC用のタイマー変数
+unsigned long lastAdcTime = 0;
 
 double forceSum[6] = {0.0};
 double windSum = 0.0;
@@ -47,12 +51,9 @@ float currentPulse = 1472.0;
 float targetPulse = 1472.0;
 unsigned long lastServoUpdate = 0;
 
-// ==========================================
 // I2Cバスのハングアップを強制リセットする関数
-// ==========================================
 void resetI2CBus() {
   Wire.end();
-  // SCL / SDA ピンを一度手動でHIGHにして解放を試みる（一般的なI2Cハングアップ対策）
   pinMode(SDA, OUTPUT);
   pinMode(SCL, OUTPUT);
   digitalWrite(SDA, HIGH);
@@ -100,9 +101,16 @@ uint8_t readRegister(uint8_t address) {
 
 void setup() {
   Serial.begin(115200);
+  Serial.setTimeout(10); // シリアルタイムアウトを10msに短縮
   while (!Serial);
 
   delay(1000); 
+
+  // ★ リレー用ピンを出力モードに設定＆初期状態OFF(LOW)
+  pinMode(RELAY1_PIN, OUTPUT);
+  pinMode(RELAY2_PIN, OUTPUT);
+  digitalWrite(RELAY1_PIN, LOW);
+  digitalWrite(RELAY2_PIN, LOW);
 
   pinMode(PIN_AD_CS, OUTPUT);
   pinMode(PIN_AD_CONVST, OUTPUT);
@@ -169,12 +177,24 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
 
-  // 1. サーボの目標角度受信
+  // ★ 1. シリアルコマンド受信（サーボ角度設定 / リレー制御）
   if (Serial.available() > 0) {
-    float angle = Serial.parseFloat();
-    while (Serial.available() > 0) Serial.read();
-    if (angle >= 0.0 && angle <= 180.0) {
-      targetPulse = 544.0 + (angle / 180.0) * (2400.0 - 544.0);
+    String inputStr = Serial.readStringUntil('\n');
+    inputStr.trim();
+
+    if (inputStr.equals("R1_ON")) {
+      digitalWrite(RELAY1_PIN, HIGH);
+    } else if (inputStr.equals("R1_OFF")) {
+      digitalWrite(RELAY1_PIN, LOW);
+    } else if (inputStr.equals("R2_ON")) {
+      digitalWrite(RELAY2_PIN, HIGH);
+    } else if (inputStr.equals("R2_OFF")) {
+      digitalWrite(RELAY2_PIN, LOW);
+    } else if (inputStr.length() > 0) {
+      float angle = inputStr.toFloat();
+      if (angle >= 0.0 && angle <= 180.0) {
+        targetPulse = 544.0 + (angle / 180.0) * (2400.0 - 544.0);
+      }
     }
   }
 
@@ -204,7 +224,6 @@ void loop() {
                    (p < 300.0 || p > 1200.0);
 
     if (isError) {
-      // ★ 単にbeginするだけでなく、I2Cバス全体を物理的にリセットしてから再初期化
       resetI2CBus();
       bme.begin(0x76); 
     } else {
@@ -215,7 +234,7 @@ void loop() {
     lastBmeTime = currentTime;
   }
 
-  // 4. AD7606 サンプリング（★ 1msインターバル制限を追加）
+  // 4. AD7606 サンプリング（1msインターバル制限）
   if (currentTime - lastAdcTime >= ADC_INTERVAL) {
     int16_t adRaw[8];
     
@@ -247,7 +266,7 @@ void loop() {
     windSum += wS;
     
     sampleCount++;
-    lastAdcTime = currentTime; // タイマー更新
+    lastAdcTime = currentTime;
   }
 
   // 5. データの送信 (0.05秒周期)
