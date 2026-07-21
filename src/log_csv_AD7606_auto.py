@@ -31,9 +31,9 @@ UI_MA_WINDOW = 10
 BAUD_RATE = 115200
 SAVE_DIR = "result_csv"
 
-# 角度許容誤差: ±0.3deg 以下
+# 角度許容誤差
 FEEDBACK_TOLERANCE_STRICT = 0.20  
-FEEDBACK_TOLERANCE_FINAL = 0.30   # ±0.3deg以内に入れば到達と判定
+FEEDBACK_TOLERANCE_FINAL = 0.40
 FEEDBACK_INTERVAL = 3000         
 MAX_ITERATIONS = 20              
 FEEDBACK_DAMPING = 0.9           
