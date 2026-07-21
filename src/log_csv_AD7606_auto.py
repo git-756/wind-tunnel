@@ -31,9 +31,9 @@ UI_MA_WINDOW = 10
 BAUD_RATE = 115200
 SAVE_DIR = "result_csv"
 
-# ★ 角度の許容誤差を ±0.3deg 以下に設定
+# 角度許容誤差: ±0.3deg 以下
 FEEDBACK_TOLERANCE_STRICT = 0.20  
-FEEDBACK_TOLERANCE_FINAL = 0.45
+FEEDBACK_TOLERANCE_FINAL = 0.30   # ±0.3deg以内に入れば到達と判定
 FEEDBACK_INTERVAL = 3000         
 MAX_ITERATIONS = 20              
 FEEDBACK_DAMPING = 0.9           
@@ -296,7 +296,7 @@ class MainWindow(QMainWindow):
 
         self.spin_duration = QSpinBox()
         self.spin_duration.setRange(1, 36000)
-        self.spin_duration.setValue(10)       
+        self.spin_duration.setValue(90)       
         self.spin_duration.setSuffix(" s")
         self.spin_duration.setEnabled(False)  
 
@@ -436,11 +436,11 @@ class MainWindow(QMainWindow):
 
         form_layout.addRow("Loads:", fm_grid)
 
-        # CL / CD横並び
+        # CL / CD横並び（★ CD文字色を緑色に変更）
         self.lbl_cl = QLabel("0.000")
         self.lbl_cl.setStyleSheet("color: #d90000; font-weight: bold; font-size: 14px;")
         self.lbl_cd = QLabel("0.000")
-        self.lbl_cd.setStyleSheet("color: #0000d9; font-weight: bold; font-size: 14px;")
+        self.lbl_cd.setStyleSheet("color: #28a745; font-weight: bold; font-size: 14px;") # 青 -> 緑
         
         coeff_layout = QHBoxLayout()
         coeff_layout.addWidget(QLabel("CL:"))
@@ -531,20 +531,14 @@ class MainWindow(QMainWindow):
         auto_layout.addLayout(sweep_param_layout)
 
         time_param_layout = QHBoxLayout()
+        # ★ Rec Dur デフォルト90s、上限180s
         self.spin_rec_dur = QSpinBox()
-        self.spin_rec_dur.setRange(1, 60)
-        self.spin_rec_dur.setValue(10)
+        self.spin_rec_dur.setRange(1, 180)
+        self.spin_rec_dur.setValue(90)
         self.spin_rec_dur.setSuffix(" s")
-        
-        self.spin_wind_wait = QSpinBox()
-        self.spin_wind_wait.setRange(1, 30)
-        self.spin_wind_wait.setValue(5)
-        self.spin_wind_wait.setSuffix(" s")
         
         time_param_layout.addWidget(QLabel("Rec Dur:"))
         time_param_layout.addWidget(self.spin_rec_dur)
-        time_param_layout.addWidget(QLabel("Wind Wait:"))
-        time_param_layout.addWidget(self.spin_wind_wait)
         auto_layout.addLayout(time_param_layout)
 
         self.btn_auto_sweep = QPushButton("START AUTO SWEEP (0°~60°)")
@@ -587,7 +581,7 @@ class MainWindow(QMainWindow):
         self.plot_coeff.addLegend()
         self.plot_coeff.showGrid(x=True, y=True)
         self.curve_cl = self.plot_coeff.plot(pen=pg.mkPen((255, 50, 50), width=2), name="CL")
-        self.curve_cd = self.plot_coeff.plot(pen=pg.mkPen((50, 100, 255), width=2), name="CD")
+        self.curve_cd = self.plot_coeff.plot(pen=pg.mkPen((40, 167, 69), width=2), name="CD") # グラフも緑色に変更
         right_layout.addWidget(self.plot_coeff)
 
         main_layout.addWidget(left_panel)
@@ -653,14 +647,13 @@ class MainWindow(QMainWindow):
         self.lbl_auto_status.setText(f"Auto Sweep: {msg}")
         self.lbl_auto_status.setStyleSheet("color: blue; font-weight: bold;" if "Done" in msg else "color: red; font-weight: bold;")
 
-    # ★ リレー1 ➔ 5秒待機 ➔ リレー2 の連続シーケンスを実装
+    # ★ 連続シーケンス（45s風静止 ➔ ゼロ更新 ➔ Tare計測 ➔ 2s遅延 ➔ R1 ON ➔ 5s待機 ➔ R2 ON ➔ 15s風安定 ➔ Test計測 ➔ 2s遅延）
     def process_auto_sequence(self):
         if not self.auto_seq_running or self.worker is None:
             return
 
         target_angle = self.auto_angles[self.auto_angle_idx]
         rec_dur = self.spin_rec_dur.value()
-        wind_wait = self.spin_wind_wait.value()
 
         # 1. サーボの移動要求
         if self.auto_step_state == 'MOVE_SERVO':
@@ -673,7 +666,6 @@ class MainWindow(QMainWindow):
         # 2. サーボ移動完了（±0.30deg内収束）待ち
         elif self.auto_step_state == 'WAIT_SERVO':
             if self.servo_status == 'OK':
-                self.lbl_auto_status.setText(f"[{target_angle}°] Servo Settled. Turning Wind OFF for Tare...")
                 if self.btn_relay1.isChecked():
                     self.btn_relay1.setChecked(False)
                     self.toggle_relay1(False)
@@ -686,11 +678,16 @@ class MainWindow(QMainWindow):
                 self.stop_auto_sweep(f"Servo Error at {target_angle}°!")
             return
 
-        # 3. 風静止待ち
+        # 3. 風静止待ち (★ 固定 45秒)
         elif self.auto_step_state == 'WAIT_WIND_OFF':
             self.auto_timer_counter += 1
-            if self.auto_timer_counter >= wind_wait * 2:
-                self.lbl_auto_status.setText(f"[{target_angle}°] Recording Tare...")
+            remain_s = 45 - (self.auto_timer_counter // 2)
+            self.lbl_auto_status.setText(f"[{target_angle}°] Waiting Wind OFF... ({remain_s}s)")
+            if self.auto_timer_counter >= 45 * 2: # 45秒経過
+                # ★ Tare計測直前に 6-Axis Tare の Update Zero を自動実行
+                self.update_tare_force()
+                
+                self.lbl_auto_status.setText(f"[{target_angle}°] Recording Tare ({rec_dur}s)...")
                 self.btn_rec.setChecked(True)
                 self.toggle_recording(True)
                 self.auto_timer_counter = 0
@@ -704,50 +701,70 @@ class MainWindow(QMainWindow):
                 self.btn_rec.setChecked(False)
                 self.toggle_recording(False)
                 
-                # Tare完了後、まずリレー1をON
-                self.lbl_auto_status.setText(f"[{target_angle}°] Tare Done. Turning Relay 1 ON...")
+                # ★ 計測終了後 2秒のディレイ処理へ
+                self.lbl_auto_status.setText(f"[{target_angle}°] Tare Rec Done. Waiting 2s...")
+                self.auto_timer_counter = 0
+                self.auto_step_state = 'POST_TARE_DELAY'
+            return
+
+        # ★ 4.5. Tare計測後 2秒ディレイ
+        elif self.auto_step_state == 'POST_TARE_DELAY':
+            self.auto_timer_counter += 1
+            if self.auto_timer_counter >= 2 * 2: # 2秒経過
+                self.lbl_auto_status.setText(f"[{target_angle}°] Turning Relay 1 ON...")
                 self.btn_relay1.setChecked(True)
                 self.toggle_relay1(True)
                 self.auto_timer_counter = 0
                 self.auto_step_state = 'WAIT_RELAY2_ON'
             return
 
-        # ★ 4.5. リレー1 ON から 5秒経過後にリレー2をON
+        # 5. リレー1 ON から 5秒待機後にリレー2 ON
         elif self.auto_step_state == 'WAIT_RELAY2_ON':
             self.auto_timer_counter += 1
-            if self.auto_timer_counter >= 5 * 2: # 0.5s * 10 = 5秒待機
-                self.lbl_auto_status.setText(f"[{target_angle}°] 5s elapsed. Turning Relay 2 ON...")
+            if self.auto_timer_counter >= 5 * 2: # 5秒経過
+                self.lbl_auto_status.setText(f"[{target_angle}°] Turning Relay 2 ON...")
                 self.btn_relay2.setChecked(True)
                 self.toggle_relay2(True)
                 self.auto_timer_counter = 0
                 self.auto_step_state = 'WAIT_WIND_ON'
             return
 
-        # 5. 送風機ON後の風立ち上がり・定常流待ち
+        # 6. 送風機ON後の風立ち上がり・定常流待ち (★ 固定 15秒)
         elif self.auto_step_state == 'WAIT_WIND_ON':
             self.auto_timer_counter += 1
-            if self.auto_timer_counter >= wind_wait * 2:
-                self.lbl_auto_status.setText(f"[{target_angle}°] Recording Test...")
+            remain_s = 15 - (self.auto_timer_counter // 2)
+            self.lbl_auto_status.setText(f"[{target_angle}°] Waiting Wind ON... ({remain_s}s)")
+            if self.auto_timer_counter >= 15 * 2: # 15秒経過
+                self.lbl_auto_status.setText(f"[{target_angle}°] Recording Test ({rec_dur}s)...")
                 self.btn_rec.setChecked(True)
                 self.toggle_recording(True)
                 self.auto_timer_counter = 0
                 self.auto_step_state = 'REC_TEST'
             return
 
-        # 6. Test計測中
+        # 7. Test計測中
         elif self.auto_step_state == 'REC_TEST':
             self.auto_timer_counter += 1
             if self.auto_timer_counter >= rec_dur * 2:
                 self.btn_rec.setChecked(False)
                 self.toggle_recording(False)
                 
-                # 両リレーをOFF
+                # 両リレーOFF
                 self.btn_relay1.setChecked(False)
                 self.toggle_relay1(False)
                 self.btn_relay2.setChecked(False)
                 self.toggle_relay2(False)
                 
-                # 次の角度へ進む
+                # ★ 計測終了後 2秒のディレイ処理へ
+                self.lbl_auto_status.setText(f"[{target_angle}°] Test Rec Done. Waiting 2s...")
+                self.auto_timer_counter = 0
+                self.auto_step_state = 'POST_TEST_DELAY'
+            return
+
+        # ★ 7.5. Test計測後 2秒ディレイ ➔ 次の角度へ
+        elif self.auto_step_state == 'POST_TEST_DELAY':
+            self.auto_timer_counter += 1
+            if self.auto_timer_counter >= 2 * 2: # 2秒経過
                 self.auto_angle_idx += 1
                 if self.auto_angle_idx < len(self.auto_angles):
                     self.auto_step_state = 'MOVE_SERVO'
@@ -959,7 +976,7 @@ class MainWindow(QMainWindow):
             Tk = avg_temp + 273.15
             if Tk > 0:
                 Es = 6.1078 * 10.0 ** ((7.5 * avg_temp) / (avg_temp + 237.3))
-                Pv = Es * (hum / 100.0)
+                Pv = Es * (avg_hum / 100.0)
                 Pd = avg_pres - Pv
                 rho = (Pd * 100.0 / (287.05 * Tk)) + (Pv * 100.0 / (461.495 * Tk))
             else:
